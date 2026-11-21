@@ -1,0 +1,81 @@
+name: workbuddy-checkin
+
+on:
+  schedule:
+    # UTC 01:10 = 北京时间 09:10
+    - cron: "10 1 * * *"
+    # UTC 12:10 = 北京时间 20:10
+    - cron: "10 12 * * *"
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "只跑哪个账号（留空 = 全部）"
+        required: false
+        type: choice
+        default: all
+        options: [all, "1", "2"]
+
+concurrency:
+  group: workbuddy-checkin
+  cancel-in-progress: false
+
+permissions:
+  # 最后一步要把当天结果提交回 reports/，供事后逐日核对。
+  # 用仓库自带的 GITHUB_TOKEN 即可，不需要额外 PAT。
+  contents: write
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # 账号 2 是否配置：只有存在 WORKBUDDY_UID_2 时才跑小号那一步。
+    # GitHub 不允许在 step 的 if 里直接读 secrets，所以先落到 job 级 env 再判断。
+    env:
+      HAS_ACCOUNT_2: ${{ secrets.WORKBUDDY_UID_2 != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 账号 1 签到
+        # 必须显式判断 schedule：定时触发时 github.event.inputs 不存在，
+        # 靠 null == '' 的隐式宽松比较不可靠。
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.account == 'all' || github.event.inputs.account == '1' || github.event.inputs.account == '' }}
+        env:
+          WORKBUDDY_ACCOUNT: "1"
+          WORKBUDDY_ACCOUNT_LABEL: 账号1
+          WORKBUDDY_ACCESS_TOKEN: ${{ secrets.WORKBUDDY_ACCESS_TOKEN_1 }}
+          WORKBUDDY_UID: ${{ secrets.WORKBUDDY_UID_1 }}
+          WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN_1 }}
+          # 可选：令牌续期后自动回写对应 Secrets
+          GH_SECRETS_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
+          WB_GITHUB_REPO: ${{ github.repository }}
+        run: python3 checkin.py
+
+      # 只有一个账号时这一步会自动跳过，不会产生红色失败记录。
+      # 要跑第二个账号：加一组 _2 后缀的 Secrets 即可，无需改本文件。
+      - name: 账号 2 签到
+        if: ${{ always() && env.HAS_ACCOUNT_2 == 'true' && (github.event_name == 'schedule' || github.event.inputs.account == 'all' || github.event.inputs.account == '2' || github.event.inputs.account == '') }}
+        env:
+          WORKBUDDY_ACCOUNT: "2"
+          WORKBUDDY_ACCOUNT_LABEL: 账号2
+          WORKBUDDY_ACCESS_TOKEN: ${{ secrets.WORKBUDDY_ACCESS_TOKEN_2 }}
+          WORKBUDDY_UID: ${{ secrets.WORKBUDDY_UID_2 }}
+          WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN_2 }}
+          GH_SECRETS_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
+          WB_GITHUB_REPO: ${{ github.repository }}
+        run: python3 checkin.py
+
+      # runner 是临时机器，不写回仓库就什么都不剩。
+      # always() 保证某个账号失败时，失败记录同样被记下来。
+      - name: 汇总结果到 reports/
+        if: ${{ always() }}
+        env:
+          WORKBUDDY_LOG_FILE: state/checkin.log
+        run: python3 tools/report.py
