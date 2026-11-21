@@ -1,0 +1,13 @@
+# 本地状态：可能含令牌与签到日志，绝不入库
+state/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 环境变量文件
+.env
+.env.*
